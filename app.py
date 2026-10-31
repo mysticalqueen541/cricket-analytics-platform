@@ -287,7 +287,11 @@ with tabs[4]:
                     detail = collect_match_detail(get_client(), ref)
                     if detail["scorecard"] is not None:
                         existing_cards = load_dataset(pid, fmt, "scorecards")
-                        existing_cards = [r for r in existing_cards if str(r.get("match_id")) != str(ref["match_id"])]
+                        existing_cards = [
+                            {**r, "_record_key": str(r.get("match_id", i))}
+                            for i, r in enumerate(existing_cards)
+                            if str(r.get("match_id")) != str(ref["match_id"])
+                        ]
                         existing_cards.append({
                             "_record_key": ref["match_id"],
                             "match_id": ref["match_id"],
@@ -386,6 +390,7 @@ with tabs[6]:
             errors = []
             progress = st.progress(0)
             for idx, slug in enumerate(series_slugs, start=1):
+                time.sleep(REQUEST_DELAY_SECONDS)
                 try:
                     detail = get_client().series(slug)
                     matches = get_client().series_matches(slug)
@@ -425,6 +430,7 @@ with tabs[7]:
         team_formats = st.multiselect("Team formats", list(FORMATS.keys()), default=list(FORMATS.keys()), key="team_formats")
         if st.button("Fetch team profile and records", disabled=not team_formats):
             errors = []
+            time.sleep(REQUEST_DELAY_SECONDS)
             try:
                 profile = get_client().team(team_slug)
                 save_dataset(pid, "team", "team_profile", [{"_record_key": team_slug, "team_slug": team_slug, "team_json": profile}])
@@ -433,11 +439,13 @@ with tabs[7]:
             progress = st.progress(0)
             for idx, label in enumerate(team_formats, start=1):
                 fmt = FORMATS[label]
+                time.sleep(REQUEST_DELAY_SECONDS)
                 try:
                     career = get_client().team_career_stats(team_id, fmt=fmt)
                     save_dataset(pid, fmt, "team_career", [career] if career else [])
                 except Exception as exc:
                     errors.append(f"{label} team career: {exc}")
+                time.sleep(REQUEST_DELAY_SECONDS)
                 try:
                     matches = get_client().team_match_list(team_id, fmt=fmt)
                     save_dataset(pid, fmt, "team_matches", list((matches or {}).get("matches", [])))
