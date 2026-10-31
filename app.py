@@ -179,9 +179,16 @@ with tabs[0]:
         batting_innings = load_dataset(pid, fmt, "innings_batting")
         if career or history or batting_innings:
             summary = (career[0] if career else {})
+            source_mat = summary.get("Mat")
+            try:
+                source_mat_gap = int(source_mat) - len(history) if source_mat not in (None, "", "-") else None
+            except (TypeError, ValueError):
+                source_mat_gap = None
             overview_rows.append({
                 "Format": label,
-                "Matches in history": len(history),
+                "Matches (Statsguru Mat)": source_mat,
+                "Match-history rows": len(history),
+                "Mat minus history rows": source_mat_gap,
                 "Batting innings": len(batting_innings),
                 "Runs (source summary)": summary.get("Runs"),
                 "Average (source summary)": summary.get("Ave"),
