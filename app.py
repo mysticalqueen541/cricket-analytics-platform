@@ -149,7 +149,10 @@ if refresh or not load_frame("innings_batting").shape[0]:
             st.info("Previously saved local data will still be displayed where available.")
 
 career_rows = load_dataset(PLAYER_ID, FORMAT, "career_batting")
-career = career_rows[0] if career_rows else {}
+career_payload = career_rows[0] if career_rows else {}
+# cricdata returns career aggregates inside the "summary" key; retain a fallback
+# for versions that return the summary columns at the top level.
+career = career_payload.get("summary", career_payload) if isinstance(career_payload, dict) else {}
 innings_raw = load_frame("innings_batting")
 innings = prepare_innings(innings_raw)
 history = load_frame("match_history")
@@ -179,7 +182,14 @@ hundreds = career_value(["100", "100s"])
 fifties = career_value(["50", "50s"])
 not_outs = career_value(["NO", "Not Outs"])
 last_loaded = st.session_state.get("last_refresh", "Saved local dataset")
-st.caption(f"Last retrieved: {last_loaded} · ODI debut: 11 June 2016 · Latest source match: see match-history table")
+latest_date = "not available"
+if not history.empty:
+    date_key = first_col(history, ["Start Date", "Date", "Match Date"])
+    if date_key:
+        parsed_dates = pd.to_datetime(history[date_key], errors="coerce", dayfirst=True).dropna()
+        if not parsed_dates.empty:
+            latest_date = parsed_dates.max().strftime("%d %b %Y")
+st.caption(f"Last retrieved: {last_loaded} · ODI debut: 11 June 2016 · Latest ODI in collected match list: {latest_date}")
 
 kpis = st.columns(7)
 for col, label, value in zip(kpis,
@@ -200,6 +210,7 @@ with tabs[0]:
         st.markdown("**Official Statsguru ODI batting summary**")
         if career:
             st.dataframe(pd.DataFrame([career]), use_container_width=True, hide_index=True)
+            st.caption("Career figures are read from the Statsguru summary object, not recalculated from a potentially incomplete innings extract.")
         else:
             st.info("Career summary not returned by the source.")
     with b:
