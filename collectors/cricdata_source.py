@@ -82,6 +82,7 @@ def _statsguru_link_rows(client, player_id, fmt, stat_type):
     """
     url = _statsguru_url(player_id, fmt, stat_type)
     try:
+        time.sleep(REQUEST_DELAY_SECONDS)
         # Reuse cricdata's existing session so its request configuration is consistent.
         response = client._session.get(url)
         response.raise_for_status()
