@@ -1,24 +1,42 @@
+"""Analysis helpers for Statsguru rows and normalized delivery records."""
 import pandas as pd
 
-def batting_summary(batting: pd.DataFrame):
-    if batting.empty: return pd.DataFrame()
-    df=batting.copy()
-    for c in ["runs","balls","fours","sixes","batting_position"]:
-        if c in df: df[c]=pd.to_numeric(df[c],errors="coerce")
-    if "runs" in df and "balls" in df:
-        df["strike_rate"]=(df["runs"]/df["balls"].replace(0,pd.NA))*100
+def numeric_column(df, candidates):
+    for name in candidates:
+        if name in df.columns:
+            return pd.to_numeric(df[name].astype(str).str.replace(",", "", regex=False), errors="coerce")
+    return pd.Series([pd.NA] * len(df), index=df.index, dtype="Float64")
+
+def batting_metrics(rows):
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    runs = numeric_column(df, ["Runs", "R", "runs"])
+    balls = numeric_column(df, ["BF", "Balls", "B", "balls"])
+    df["runs_numeric"] = runs
+    df["balls_numeric"] = balls
+    df["strike_rate_calculated"] = (runs / balls.where(balls.ne(0))) * 100
     return df
 
-def coverage_summary(matches: pd.DataFrame):
-    if matches.empty: return {"matches":0,"scorecards":0,"deliveries":0,"failed":0}
+def coverage_metrics(rows):
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return {"matches": 0, "scorecards": 0, "deliveries": 0, "failed": 0, "unresolved": 0}
     return {
-      "matches":len(matches),
-      "scorecards":int(matches.get("scorecard_status",pd.Series(dtype=str)).isin(["complete","partial"]).sum()),
-      "deliveries":int(matches.get("delivery_status",pd.Series(dtype=str)).eq("complete").sum()),
-      "failed":int(matches.get("delivery_status",pd.Series(dtype=str)).eq("failed").sum())
+        "matches": len(df),
+        "scorecards": int(df["scorecard_status"].isin(["complete", "partial"]).sum()),
+        "deliveries": int(df["delivery_status"].eq("complete").sum()),
+        "failed": int(df["delivery_status"].eq("failed").sum()),
+        "unresolved": int(df["match_id"].isna().sum()) if "match_id" in df else 0,
     }
 
 def odi_phase(over_number):
-    if pd.isna(over_number): return "Unknown"
-    o=int(over_number)+1
-    return "1–10" if o<=10 else ("11–40" if o<=40 else "41–50")
+    try:
+        over = int(over_number) + 1
+    except (TypeError, ValueError):
+        return "Unknown"
+    if over <= 10:
+        return "1–10"
+    if over <= 40:
+        return "11–40"
+    return "41–50"
