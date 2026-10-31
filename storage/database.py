@@ -1,93 +1,140 @@
-import sqlite3
+"""Local SQLite persistence for collected cricket datasets and coverage."""
 import json
+import sqlite3
 from datetime import datetime, timezone
-import pandas as pd
 from config import DB_PATH
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS datasets (
+    player_id TEXT NOT NULL,
+    format TEXT NOT NULL,
+    dataset TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'ESPNcricinfo',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(player_id, format, dataset, record_key)
+);
+CREATE TABLE IF NOT EXISTS coverage (
+    player_id TEXT NOT NULL,
+    format TEXT NOT NULL,
+    match_id TEXT NOT NULL,
+    match_slug TEXT,
+    series_slug TEXT,
+    match_date TEXT,
+    opposition TEXT,
+    ground TEXT,
+    match_label TEXT,
+    scorecard_status TEXT NOT NULL DEFAULT 'pending',
+    delivery_status TEXT NOT NULL DEFAULT 'pending',
+    delivery_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(player_id, format, match_id)
+);
 CREATE TABLE IF NOT EXISTS players (
- player_id TEXT PRIMARY KEY, name TEXT NOT NULL, country TEXT, profile_url TEXT,
- updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS matches (
- match_id TEXT PRIMARY KEY, player_id TEXT, format TEXT, date TEXT, opposition TEXT,
- team TEXT, venue TEXT, series TEXT, match_url TEXT, discovery_source TEXT,
- scorecard_status TEXT DEFAULT 'pending', delivery_status TEXT DEFAULT 'pending',
- last_error TEXT, updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS batting (
- match_id TEXT, innings INTEGER, player_id TEXT, player_name TEXT, batting_position INTEGER,
- runs INTEGER, balls INTEGER, fours INTEGER, sixes INTEGER, dismissal TEXT,
- PRIMARY KEY(match_id, innings, player_id)
-);
-CREATE TABLE IF NOT EXISTS bowling (
- match_id TEXT, innings INTEGER, player_id TEXT, player_name TEXT, overs REAL,
- maidens INTEGER, runs INTEGER, wickets INTEGER, wides INTEGER, no_balls INTEGER,
- PRIMARY KEY(match_id, innings, player_id)
-);
-CREATE TABLE IF NOT EXISTS deliveries (
- match_id TEXT, innings INTEGER, over_number INTEGER, ball_number INTEGER,
- batter TEXT, non_striker TEXT, bowler TEXT, runs_batter INTEGER, runs_extras INTEGER,
- total_runs INTEGER, extras_type TEXT, wicket_type TEXT, dismissed_batter TEXT,
- source TEXT, PRIMARY KEY(match_id, innings, over_number, ball_number)
+    player_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    profile_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 """
 
+def _now():
+    return datetime.now(timezone.utc).isoformat()
+
 def connect():
-    con = sqlite3.connect(DB_PATH, check_same_thread=False)
+    con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
     return con
 
-def save_player(player):
+def save_player(player_id, display_name, profile):
     with connect() as con:
-        con.execute("""INSERT INTO players VALUES(?,?,?,?,?)
-        ON CONFLICT(player_id) DO UPDATE SET name=excluded.name,country=excluded.country,
-        profile_url=excluded.profile_url,updated_at=excluded.updated_at""",
-        (str(player["player_id"]), player["name"], player.get("country"),
-         player.get("profile_url"), datetime.now(timezone.utc).isoformat()))
+        con.execute(
+            """INSERT INTO players VALUES(?,?,?,?)
+               ON CONFLICT(player_id) DO UPDATE SET
+               display_name=excluded.display_name,
+               profile_json=excluded.profile_json,
+               updated_at=excluded.updated_at""",
+            (str(player_id), display_name, json.dumps(profile, ensure_ascii=False, default=str), _now()),
+        )
 
-def save_matches(rows):
-    now = datetime.now(timezone.utc).isoformat()
+def save_dataset(player_id, fmt, dataset, records, source="ESPNcricinfo"):
+    """Replace one named dataset atomically; records are dictionaries."""
+    with connect() as con:
+        con.execute(
+            "DELETE FROM datasets WHERE player_id=? AND format=? AND dataset=?",
+            (str(player_id), fmt, dataset),
+        )
+        for i, record in enumerate(records):
+            key = str(record.get("_record_key", i))
+            payload = {k: v for k, v in record.items() if k != "_record_key"}
+            con.execute(
+                "INSERT OR REPLACE INTO datasets VALUES(?,?,?,?,?,?,?)",
+                (str(player_id), fmt, dataset, key,
+                 json.dumps(payload, ensure_ascii=False, default=str), source, _now()),
+            )
+
+def load_dataset(player_id, fmt, dataset):
+    with connect() as con:
+        rows = con.execute(
+            "SELECT payload FROM datasets WHERE player_id=? AND format=? AND dataset=? ORDER BY record_key",
+            (str(player_id), fmt, dataset),
+        ).fetchall()
+    return [json.loads(r["payload"]) for r in rows]
+
+def save_coverage_rows(rows):
     with connect() as con:
         for r in rows:
-            con.execute("""INSERT INTO matches
-            (match_id,player_id,format,date,opposition,team,venue,series,match_url,
-             discovery_source,scorecard_status,delivery_status,last_error,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(match_id) DO UPDATE SET
-            player_id=excluded.player_id,format=excluded.format,date=excluded.date,
-            opposition=excluded.opposition,team=excluded.team,venue=excluded.venue,
-            series=excluded.series,match_url=excluded.match_url,
-            discovery_source=excluded.discovery_source,updated_at=excluded.updated_at""",
-            (str(r["match_id"]),str(r.get("player_id","")),r.get("format"),r.get("date"),
-             r.get("opposition"),r.get("team"),r.get("venue"),r.get("series"),
-             r.get("match_url"),r.get("discovery_source","unknown"),
-             r.get("scorecard_status","pending"),r.get("delivery_status","pending"),
-             r.get("last_error"),now))
+            con.execute(
+                """INSERT INTO coverage
+                (player_id,format,match_id,match_slug,series_slug,match_date,opposition,
+                 ground,match_label,scorecard_status,delivery_status,delivery_count,last_error,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(player_id,format,match_id) DO UPDATE SET
+                match_slug=COALESCE(excluded.match_slug,coverage.match_slug),
+                series_slug=COALESCE(excluded.series_slug,coverage.series_slug),
+                match_date=COALESCE(excluded.match_date,coverage.match_date),
+                opposition=COALESCE(excluded.opposition,coverage.opposition),
+                ground=COALESCE(excluded.ground,coverage.ground),
+                match_label=COALESCE(excluded.match_label,coverage.match_label),
+                updated_at=excluded.updated_at""",
+                (str(r["player_id"]), r["format"], str(r["match_id"]), r.get("match_slug"),
+                 r.get("series_slug"), r.get("match_date"), r.get("opposition"), r.get("ground"),
+                 r.get("match_label"), r.get("scorecard_status", "pending"),
+                 r.get("delivery_status", "pending"), int(r.get("delivery_count", 0)),
+                 r.get("last_error"), _now()),
+            )
 
-def update_match_status(match_id, **fields):
-    allowed={"scorecard_status","delivery_status","last_error"}
-    fields={k:v for k,v in fields.items() if k in allowed}
-    if not fields: return
-    fields["updated_at"]=datetime.now(timezone.utc).isoformat()
-    sql=", ".join(f"{k}=?" for k in fields)
+def update_coverage(player_id, fmt, match_id, **fields):
+    allowed = {"scorecard_status", "delivery_status", "delivery_count", "last_error"}
+    fields = {k: v for k, v in fields.items() if k in allowed}
+    if not fields:
+        return
+    fields["updated_at"] = _now()
+    sql = ", ".join(f"{k}=?" for k in fields)
     with connect() as con:
-        con.execute(f"UPDATE matches SET {sql} WHERE match_id=?",
-                    (*fields.values(),str(match_id)))
+        con.execute(
+            f"UPDATE coverage SET {sql} WHERE player_id=? AND format=? AND match_id=?",
+            (*fields.values(), str(player_id), fmt, str(match_id)),
+        )
 
-def read_table(table):
-    allowed={"players","matches","batting","bowling","deliveries"}
-    if table not in allowed: raise ValueError("Unknown table")
+def load_coverage(player_id, fmt=None):
     with connect() as con:
-        return pd.read_sql_query(f"SELECT * FROM {table}",con)
+        if fmt:
+            rows = con.execute(
+                "SELECT * FROM coverage WHERE player_id=? AND format=? ORDER BY match_date,match_id",
+                (str(player_id), fmt),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM coverage WHERE player_id=? ORDER BY format,match_date,match_id",
+                (str(player_id),),
+            ).fetchall()
+    return [dict(r) for r in rows]
 
-def save_deliveries(match_id, innings, rows, source):
+def load_player(player_id):
     with connect() as con:
-        for d in rows:
-            con.execute("""INSERT OR REPLACE INTO deliveries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (str(match_id),int(innings),int(d.get("over_number",0)),int(d.get("ball_number",0)),
-             d.get("batter"),d.get("non_striker"),d.get("bowler"),
-             int(d.get("runs_batter",0)),int(d.get("runs_extras",0)),
-             int(d.get("total_runs",0)),d.get("extras_type"),d.get("wicket_type"),
-             d.get("dismissed_batter"),source))
+        row = con.execute("SELECT * FROM players WHERE player_id=?", (str(player_id),)).fetchone()
+    return dict(row) if row else None
