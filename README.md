@@ -1,25 +1,43 @@
-# Cricket Analytics Platform
+# KL Rahul ODI Analytics Dashboard
 
-Player-first international cricket data collection and analysis using Python, Streamlit, Pandas, Plotly, SQLite and the public-data client `cricdata`.
+A fixed-player Streamlit dashboard for **KL Rahul's ODI career**, from his ODI debut on 11 June 2016 through the latest match available from the public source.
 
-## What the app does
+There is no player search, player selector, format selector, team explorer, or ball-by-ball workflow. The dashboard is dedicated to KL Rahul and ODI cricket.
 
-1. Search ESPNcricinfo for a player by name and select the correct identity.
-2. Retrieve player career aggregates, match-by-match history and innings-by-innings records for ODI, Test and T20I.
-3. Preserve the raw Statsguru rows and the source match links where those links are available.
-4. Resolve match IDs from actual match links. The app does not invent IDs when link rows cannot be matched safely.
-5. Attempt scorecards and delivery feeds independently for resolved matches.
-6. Track each match's scorecard and delivery status, request errors and delivery-row counts.
-7. Retrieve player series splits and venue splits, and fetch full series pages/match lists where a real series slug is available.
-8. Fetch the player's linked team profile, team career records and team match lists where ESPN exposes the team ID and slug.
-9. Explore batting, bowling, innings, series, venue, team and delivery records; download a ZIP of CSV datasets.
+## Dashboard sections
+
+- **Career overview:** career batting summary, innings score distribution and match-history inventory.
+- **Batting position:** innings, runs, average, strike rate, hundreds, fifties and highest score by batting position, when Statsguru exposes a usable position column.
+- **Innings analysis:** individual ODI innings, score progression and CSV export.
+- **Opposition & venues:** innings-level runs and scoring rates against opponents and at grounds, plus Statsguru series splits.
+- **Year-by-year:** annual ODI runs and innings trends.
+- **Records & coverage:** source career summary, resolved match-ID coverage and match-history export.
+
+## Data source and collection
+
+The app uses the fixed ESPNcricinfo Statsguru player ID `422108` for KL Rahul and requests only the ODI format (`class=2`). It uses the public-data Python package `cricdata` and public ESPNcricinfo Statsguru pages.
+
+On first launch, the dashboard automatically attempts to load the career summary, match lists, innings-by-innings batting records, series splits and venue splits. Use **Refresh latest ODI records** to retrieve them again. Data is saved locally in `data/cricket_analytics.sqlite3`.
+
+**No ball-by-ball feeds are requested.** No Cricsheet data is used. No player search, player input, format input, or manual match-ID entry is required.
+
+## Batting-position analysis: important qualification
+
+The position breakdown is calculated from the batting-position field in the retrieved innings records. If the public innings table does not return a position field, the dashboard will explicitly say so rather than infer a position from batting order, scorecard order, or another proxy. Averages by position require usable dismissal information; the dashboard labels this limitation where relevant.
+
+The match list and batting innings list are separate source datasets. A match appearance does not necessarily mean Rahul batted in that match. Source gaps and unresolved match IDs are not filled with guessed records.
 
 ## Install on Windows
 
-Use Python 3.10 or newer. Python 3.12 is a conservative choice; the current cricdata release also declares Python 3.14 support. The app does not require Playwright or a manually installed browser.
+Python 3.10 or newer is required. Python 3.12 is a conservative choice; current `cricdata` metadata also declares Python 3.14 support.
+
+1. Download the repository ZIP from GitHub and extract it.
+2. Run `install_windows.bat`.
+3. Run `run_windows.bat`.
+
+Or install manually:
 
 ```powershell
-cd cricket-analytics-platform
 py -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -27,46 +45,22 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-If PowerShell blocks activation, run:
+If PowerShell blocks activation:
+
 ```powershell
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-## Workflow
+## Limitations
 
-- Enter a player name (for example, KL Rahul), click **Search player**, and select the matching identity.
-- Select ODI, Test and/or T20I, then click **Collect career datasets**.
-- Review career summaries, match lists and innings.
-- Go to **Coverage & deliveries**, set the delivery batch limit to 0 to attempt all resolved matches (or use a smaller batch first), and click **Fetch ball-by-ball**.
-- Download all stored datasets from **Exports**.
+- This is an independent project, not affiliated with ESPNcricinfo.
+- It relies on public pages and the behaviour of the third-party `cricdata` package.
+- HTTP 403/429 responses, timeouts, parser changes or missing source fields can cause incomplete retrieval.
+- A successful collection does not prove that every historical innings or match is represented.
+- The dashboard does not fabricate missing scores, batting positions, match IDs, dismissal types or delivery-level metrics.
+- No live end-to-end test against ESPNcricinfo has been claimed; validate the retrieved counts against the source career summary after running it locally.
 
-## Data and coverage rules
+## Repository
 
-- Career match lists, batting innings and bowling innings are different datasets; they are not interchangeable.
-- A player can appear in a match without recording a batting innings. The match-list source determines the inventory; innings tables determine recorded innings.
-- Match IDs are assigned only from actual ESPN match links when the parser can align the link rows with the provider's match rows. If the row counts do not match, IDs are left unresolved rather than guessed.
-- Scorecards and ball-by-ball are attempted separately. A scorecard can succeed while deliveries fail, or vice versa.
-- HTTP 403, 429, timeouts and parser errors are retrieval failures, not evidence that a match is absent.
-- The app preserves provider fields and raw delivery JSON. It does not manufacture deliveries, extras, shot locations or wagon-wheel coordinates.
-- Public source coverage varies by match and year. A successful run does not imply that every historical match has a complete delivery feed.
-
-## Technical notes
-
-- Uses the documented synchronous `CricinfoClient` interface; Streamlit does not call `asyncio.get_event_loop()`.
-- Uses conservative sequential collection and a pause between provider requests.
-- Local records are stored in `data/cricket_analytics.sqlite3` (ignored by Git).
-- Data exports are CSV files packaged in a ZIP.
-- Provider library: https://github.com/arnavbonigala/cricdata
-
-## Troubleshooting
-
-**Player search fails:** verify internet connectivity, update packages with `pip install --upgrade cricdata`, and retry later. If the provider denies access, the error is shown in the app.
-
-**No match IDs resolved:** career text rows may still be available, but ESPN's Statsguru HTML links could not be aligned safely. The app reports unresolved IDs; it does not guess match identifiers.
-
-**Some deliveries are missing:** check the coverage table. A 403/429, missing feed or provider error remains marked as a failure or unavailable status. Retry smaller batches after a pause.
-
-## Disclaimer
-
-This is an independent analytics tool and is not affiliated with ESPN or ESPNcricinfo. It uses publicly accessible source data subject to source availability and applicable terms. It does not bypass authentication, CAPTCHA or access restrictions.
+This project is separate from `irony-man/krishna-cricinfo-code`; that repository is not changed by this dashboard.
