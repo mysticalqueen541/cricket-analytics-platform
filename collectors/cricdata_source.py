@@ -110,7 +110,12 @@ def _safe_call(fn, *args, **kwargs):
         return None, str(exc)
 
 def collect_format_career(client, player_id, fmt):
-    """Collect career aggregates, match lists and innings for one format."""
+    """Collect only the KL Rahul ODI batting datasets used by the dashboard.
+
+    The match list is all-round so it inventories appearances (including DNB);
+    batting innings are fetched separately so batting position and score analysis
+    use only innings in which the player actually batted.
+    """
     result = {
         "career": {},
         "match_lists": {},
@@ -120,75 +125,78 @@ def collect_format_career(client, player_id, fmt):
         "coverage": [],
         "errors": [],
     }
-    for stat_type in ("allround", "batting", "bowling", "fielding"):
-        stats, err = _safe_call(client.player_career_stats, player_id, fmt=fmt, stat_type=stat_type)
-        if err:
-            result["errors"].append(f"{stat_type} career stats: {err}")
-        else:
-            result["career"][stat_type] = stats
 
-        matches, err = _safe_call(client.player_match_list, player_id, fmt=fmt, stat_type=stat_type)
-        if err:
-            result["errors"].append(f"{stat_type} match list: {err}")
-        else:
-            rows = list((matches or {}).get("matches", []))
-            links, link_error = _statsguru_link_rows(client, player_id, fmt, stat_type)
-            # Match IDs are assigned only when the provider link-row count exactly matches
-            # the typed match-row count. No positional guesses on mismatched tables.
-            if len(links) == len(rows):
-                for row, link in zip(rows, links):
-                    row.update({k: link.get(k) for k in ("match_id", "match_slug", "series_slug", "match_url")})
-            else:
-                for row in rows:
-                    row.update({"match_id": None, "match_slug": None, "series_slug": None, "match_url": None})
-                if link_error:
-                    result["errors"].append(f"{stat_type} match-ID links unavailable: {link_error}")
-                elif rows:
-                    result["errors"].append(
-                        f"{stat_type} match-ID link count ({len(links)}) did not match Statsguru rows ({len(rows)}); IDs left unresolved."
-                    )
-            result["match_lists"][stat_type] = rows
+    # Official career aggregate (contains a nested "summary" object).
+    stats, err = _safe_call(
+        client.player_career_stats, player_id, fmt=fmt, stat_type="batting"
+    )
+    if err:
+        result["errors"].append(f"batting career stats: {err}")
+    else:
+        result["career"]["batting"] = stats
 
-        innings, err = _safe_call(client.player_innings, player_id, fmt=fmt, stat_type=stat_type)
-        if err:
-            result["errors"].append(f"{stat_type} innings: {err}")
+    # One all-round match list provides the complete appearance inventory.
+    matches, err = _safe_call(
+        client.player_match_list, player_id, fmt=fmt, stat_type="allround"
+    )
+    rows = []
+    if err:
+        result["errors"].append(f"all-round match list: {err}")
+    else:
+        rows = list((matches or {}).get("matches", []))
+        links, link_error = _statsguru_link_rows(client, player_id, fmt, "allround")
+        # IDs are joined only when the public HTML and typed table have equal row counts.
+        if len(links) == len(rows):
+            for row, link in zip(rows, links):
+                row.update({
+                    k: link.get(k)
+                    for k in ("match_id", "match_slug", "series_slug", "match_url")
+                })
         else:
-            result["innings"][stat_type] = list((innings or {}).get("innings", []))
+            for row in rows:
+                row.update({
+                    "match_id": None, "match_slug": None,
+                    "series_slug": None, "match_url": None,
+                })
+            if link_error:
+                result["errors"].append(f"all-round match-ID links unavailable: {link_error}")
+            elif rows:
+                result["errors"].append(
+                    f"match-ID link count ({len(links)}) did not match match-list rows "
+                    f"({len(rows)}); IDs left unresolved."
+                )
+        result["match_lists"]["allround"] = rows
 
-    # Series and venue splits from Statsguru; these are useful independent datasets.
-    for stat_type in ("batting", "bowling"):
-        series_rows, err = _safe_call(client.player_series_list, player_id, fmt=fmt, stat_type=stat_type)
-        if err:
-            result["errors"].append(f"{stat_type} series list: {err}")
-        else:
-            result["series"][stat_type] = list((series_rows or {}).get("series", []))
-        ground_rows, err = _safe_call(client.player_ground_stats, player_id, fmt=fmt, stat_type=stat_type)
-        if err:
-            result["errors"].append(f"{stat_type} ground stats: {err}")
-        else:
-            result["grounds"][stat_type] = list((ground_rows or {}).get("grounds", []))
+    # Batting innings contain the row-level runs, balls, dismissal and position fields.
+    innings, err = _safe_call(
+        client.player_innings, player_id, fmt=fmt, stat_type="batting"
+    )
+    if err:
+        result["errors"].append(f"batting innings: {err}")
+    else:
+        result["innings"]["batting"] = list((innings or {}).get("innings", []))
 
-    # Use allround match history first, then batting; merge other stat-type rows by
-    # date/opposition/ground so the inventory includes non-batting appearances where listed.
-    primary = result["match_lists"].get("allround") or result["match_lists"].get("batting") or []
-    merged = {}
-    for stat_type, rows in result["match_lists"].items():
-        for idx, row in enumerate(rows):
-            key = "|".join(str(row.get(k, "")) for k in ("Start Date", "Opposition", "Ground", "Match"))
-            if not key.strip("|"):
-                key = f"{stat_type}:{idx}"
-            if key not in merged:
-                merged[key] = dict(row)
-                merged[key]["stat_types"] = [stat_type]
-            else:
-                merged[key]["stat_types"].append(stat_type)
-                for k in ("match_id", "match_slug", "series_slug", "match_url"):
-                    if not merged[key].get(k) and row.get(k):
-                        merged[key][k] = row[k]
+    # These Statsguru aggregates add series and ground context without scraping
+    # scorecards or requesting delivery data.
+    series_rows, err = _safe_call(
+        client.player_series_list, player_id, fmt=fmt, stat_type="batting"
+    )
+    if err:
+        result["errors"].append(f"batting series splits: {err}")
+    else:
+        result["series"]["batting"] = list((series_rows or {}).get("series", []))
 
-    # Deduplicate coverage strictly by real match ID.
+    ground_rows, err = _safe_call(
+        client.player_ground_stats, player_id, fmt=fmt, stat_type="batting"
+    )
+    if err:
+        result["errors"].append(f"batting ground splits: {err}")
+    else:
+        result["grounds"]["batting"] = list((ground_rows or {}).get("grounds", []))
+
+    result["match_history"] = rows
     coverage_by_id = {}
-    for row in merged.values():
+    for row in rows:
         mid = row.get("match_id")
         if not mid:
             continue
@@ -204,5 +212,4 @@ def collect_format_career(client, player_id, fmt):
             "match_label": row.get("Match") or row.get("Opposition"),
         }
     result["coverage"] = list(coverage_by_id.values())
-    result["match_history"] = list(merged.values())
     return result
