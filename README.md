@@ -10,7 +10,9 @@ Player-first international cricket data collection and analysis using Python, St
 4. Resolve match IDs from actual match links. The app does not invent IDs when link rows cannot be matched safely.
 5. Attempt scorecards and delivery feeds independently for resolved matches.
 6. Track each match's scorecard and delivery status, request errors and delivery-row counts.
-7. Explore batting, bowling, innings and delivery records; download a ZIP of CSV datasets.
+7. Retrieve player series splits and venue splits, and fetch full series pages/match lists where a real series slug is available.
+8. Fetch the player's linked team profile, team career records and team match lists where ESPN exposes the team ID and slug.
+9. Explore batting, bowling, innings, series, venue, team and delivery records; download a ZIP of CSV datasets.
 
 ## Install on Windows
 
