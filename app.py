@@ -139,6 +139,10 @@ if collect_button:
                 save_dataset(pid, fmt, f"match_list_{stat_type}", rows)
             for stat_type, rows in result["innings"].items():
                 save_dataset(pid, fmt, f"innings_{stat_type}", rows)
+            for stat_type, rows in result["series"].items():
+                save_dataset(pid, fmt, f"series_{stat_type}", rows)
+            for stat_type, rows in result["grounds"].items():
+                save_dataset(pid, fmt, f"grounds_{stat_type}", rows)
             save_dataset(pid, fmt, "match_history", result["match_history"])
             save_coverage_rows(result["coverage"])
             all_errors.extend([f"{fmt_label} · {e}" for e in result["errors"]])
@@ -163,7 +167,7 @@ available_formats = [label for label, code in saved_formats if load_dataset(pid,
 if not available_formats:
     available_formats = formats_selected if "formats_selected" in locals() else list(FORMATS.keys())
 
-tabs = st.tabs(["Overview", "Batting", "Bowling & fielding", "Innings", "Coverage & deliveries", "Exports"])
+tabs = st.tabs(["Overview", "Batting", "Bowling & fielding", "Innings", "Coverage & deliveries", "Exports", "Series & venues", "Team explorer"])
 
 # OVERVIEW
 with tabs[0]:
@@ -340,3 +344,119 @@ with tabs[5]:
         payload = export_player_zip(pid, chosen_codes)
         st.download_button("Download player datasets ZIP", payload, f"{name.replace(' ','_')}_cricket_data.zip", "application/zip")
     st.caption("The ZIP contains only data currently stored on this computer. It does not download missing provider data automatically.")
+
+
+# SERIES & VENUES
+with tabs[6]:
+    st.subheader("Series and venue analysis")
+    fmt_label = st.selectbox("Format", list(FORMATS.keys()), key="series_venue_fmt")
+    fmt = FORMATS[fmt_label]
+    s1, s2 = st.columns(2)
+    with s1:
+        st.markdown("**Series-by-series batting**")
+        series_bat = as_frame(load_dataset(pid, fmt, "series_batting"))
+        if series_bat.empty: st.info("No series batting split stored.")
+        else: st.dataframe(series_bat, use_container_width=True, hide_index=True)
+    with s2:
+        st.markdown("**Venue-by-venue batting**")
+        grounds_bat = as_frame(load_dataset(pid, fmt, "grounds_batting"))
+        if grounds_bat.empty: st.info("No venue batting split stored.")
+        else: st.dataframe(grounds_bat, use_container_width=True, hide_index=True)
+    s3, s4 = st.columns(2)
+    with s3:
+        st.markdown("**Series-by-series bowling**")
+        series_bowl = as_frame(load_dataset(pid, fmt, "series_bowling"))
+        if series_bowl.empty: st.info("No series bowling split stored.")
+        else: st.dataframe(series_bowl, use_container_width=True, hide_index=True)
+    with s4:
+        st.markdown("**Venue-by-venue bowling**")
+        grounds_bowl = as_frame(load_dataset(pid, fmt, "grounds_bowling"))
+        if grounds_bowl.empty: st.info("No venue bowling split stored.")
+        else: st.dataframe(grounds_bowl, use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.markdown("**Series pages and full series match lists**")
+    history = load_dataset(pid, fmt, "match_history")
+    series_slugs = sorted({str(r.get("series_slug")) for r in history if r.get("series_slug")})
+    if not series_slugs:
+        st.info("No series slugs were resolved from this player's match links. Series pages cannot be requested without a real source slug.")
+    else:
+        st.caption(f"{len(series_slugs)} series slug(s) available from the resolved match links.")
+        if st.button("Fetch series pages and match lists", key="fetch_series_pages"):
+            errors = []
+            progress = st.progress(0)
+            for idx, slug in enumerate(series_slugs, start=1):
+                try:
+                    detail = get_client().series(slug)
+                    matches = get_client().series_matches(slug)
+                    old_details = load_dataset(pid, fmt, "series_details")
+                    old_details = [r for r in old_details if r.get("series_slug") != slug]
+                    old_details.append({"_record_key": slug, "series_slug": slug, "series_json": detail})
+                    save_dataset(pid, fmt, "series_details", old_details)
+                    old_matches = load_dataset(pid, fmt, "series_match_lists")
+                    old_matches = [r for r in old_matches if r.get("series_slug") != slug]
+                    old_matches.append({"_record_key": slug, "series_slug": slug, "matches_json": matches})
+                    save_dataset(pid, fmt, "series_match_lists", old_matches)
+                except Exception as exc:
+                    errors.append(f"{slug}: {exc}")
+                progress.progress(idx / len(series_slugs))
+            if errors:
+                with st.expander(f"Series retrieval warnings ({len(errors)})"):
+                    for error in errors: st.write("• " + error)
+            st.success("Series page collection finished.")
+            st.rerun()
+        series_details = load_dataset(pid, fmt, "series_details")
+        st.write(f"Stored series pages: {len(series_details)}")
+
+# TEAM EXPLORER
+with tabs[7]:
+    st.subheader("Team explorer")
+    team = bio.get("team") if isinstance(bio, dict) else {}
+    team = team if isinstance(team, dict) else {}
+    team_id = team.get("id") or team.get("objectId")
+    team_slug = team.get("slug")
+    team_name = team.get("displayName") or team.get("name") or team.get("longName")
+    if team_name:
+        st.write(f"Player profile team: **{team_name}**")
+    if not team_id or not team_slug:
+        st.info("The selected player's bio does not expose both a team ID and team slug. Team endpoints need those real identifiers; the app will not guess them.")
+    else:
+        st.caption(f"Team ID: {team_id} · Team slug: {team_slug}")
+        team_formats = st.multiselect("Team formats", list(FORMATS.keys()), default=list(FORMATS.keys()), key="team_formats")
+        if st.button("Fetch team profile and records", disabled=not team_formats):
+            errors = []
+            try:
+                profile = get_client().team(team_slug)
+                save_dataset(pid, "team", "team_profile", [{"_record_key": team_slug, "team_slug": team_slug, "team_json": profile}])
+            except Exception as exc:
+                errors.append(f"Team profile: {exc}")
+            progress = st.progress(0)
+            for idx, label in enumerate(team_formats, start=1):
+                fmt = FORMATS[label]
+                try:
+                    career = get_client().team_career_stats(team_id, fmt=fmt)
+                    save_dataset(pid, fmt, "team_career", [career] if career else [])
+                except Exception as exc:
+                    errors.append(f"{label} team career: {exc}")
+                try:
+                    matches = get_client().team_match_list(team_id, fmt=fmt)
+                    save_dataset(pid, fmt, "team_matches", list((matches or {}).get("matches", [])))
+                except Exception as exc:
+                    errors.append(f"{label} team matches: {exc}")
+                progress.progress(idx / len(team_formats))
+            if errors:
+                with st.expander(f"Team retrieval warnings ({len(errors)})"):
+                    for error in errors: st.write("• " + error)
+            st.success("Team collection finished.")
+            st.rerun()
+
+        team_fmt_label = st.selectbox("View team records", list(FORMATS.keys()), key="team_view_fmt")
+        team_fmt = FORMATS[team_fmt_label]
+        team_career = load_dataset(pid, team_fmt, "team_career")
+        team_matches = load_dataset(pid, team_fmt, "team_matches")
+        if team_career:
+            st.markdown("**Team career summary**")
+            st.dataframe(as_frame([team_career[0].get("summary", {})]), use_container_width=True, hide_index=True)
+        if team_matches:
+            st.markdown("**Team match list**")
+            st.dataframe(as_frame(team_matches), use_container_width=True, hide_index=True)
