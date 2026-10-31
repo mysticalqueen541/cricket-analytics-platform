@@ -1,7 +1,7 @@
-"""ESPNcricinfo public-data adapter built on the cricdata package.
+"""Fixed-player ODI statistics adapter using public ESPNcricinfo Statsguru tables.
 
-The adapter keeps player search, Statsguru history, scorecards and deliveries separate.
-A failed request is returned as a failure; it is never converted to an empty career.
+Collects career aggregates, innings, match lists, series and venue splits only.
+It does not request scorecards or ball-by-ball data.
 """
 import re
 import time
@@ -202,63 +202,7 @@ def collect_format_career(client, player_id, fmt):
             "opposition": row.get("Opposition"),
             "ground": row.get("Ground"),
             "match_label": row.get("Match") or row.get("Opposition"),
-            "scorecard_status": "pending",
-            "delivery_status": "pending",
-            "delivery_count": 0,
         }
     result["coverage"] = list(coverage_by_id.values())
     result["match_history"] = list(merged.values())
     return result
-
-def collect_match_detail(client, match_ref):
-    """Attempt scorecard and ball-by-ball independently for one resolved match."""
-    out = {"scorecard": None, "deliveries": [], "scorecard_error": None, "delivery_error": None}
-    series_slug = match_ref.get("series_slug") or "series-unresolved"
-    match_slug = match_ref.get("match_slug") or f"match-{match_ref['match_id']}"
-
-    if match_ref.get("series_slug"):
-        scorecard, err = _safe_call(client.match_scorecard, series_slug, match_slug)
-        out["scorecard"], out["scorecard_error"] = scorecard, err
-    else:
-        out["scorecard_error"] = "Series slug not present in the Statsguru match link; scorecard route unresolved."
-
-    balls, err = _safe_call(client.match_ball_by_ball, series_slug, match_slug)
-    if err:
-        out["delivery_error"] = err
-    else:
-        out["deliveries"] = balls or []
-    return out
-
-def flatten_deliveries(match_id, fmt, innings_groups):
-    rows = []
-    for innings_index, balls in enumerate(innings_groups or [], start=1):
-        for ball_index, ball in enumerate(balls or [], start=1):
-            ball = dict(ball)
-            batsman = ball.get("batsman") or {}
-            bowler = ball.get("bowler") or {}
-            dismissal = ball.get("dismissal") or {}
-            over = ball.get("over") or {}
-            innings = ball.get("innings") or {}
-            batter_athlete = batsman.get("athlete") or {}
-            bowler_athlete = bowler.get("athlete") or {}
-            dismissed = dismissal.get("batsman") or {}
-            rows.append({
-                "match_id": str(match_id),
-                "format": fmt,
-                "innings": innings.get("number", innings_index),
-                "sequence": ball.get("sequence", ball_index),
-                "over_number_source": over.get("number"),
-                "ball_number_source": over.get("ball"),
-                "batter": batter_athlete.get("displayName") or batter_athlete.get("name"),
-                "bowler": bowler_athlete.get("displayName") or bowler_athlete.get("name"),
-                "batter_runs_source": batsman.get("runs"),
-                "batter_total_runs_source": batsman.get("totalRuns"),
-                "score_value_source": ball.get("scoreValue"),
-                "play_type": (ball.get("playType") or {}).get("description"),
-                "dismissal_type": dismissal.get("type"),
-                "dismissed_batter": dismissed.get("displayName") or dismissed.get("name"),
-                "short_text": ball.get("shortText"),
-                "commentary": ball.get("text"),
-                "raw_json": ball,
-            })
-    return rows
