@@ -10,4 +10,3 @@ beautifulsoup4>=4.12
 lxml>=5.3
 pyarrow>=17.0
 openpyxl>=3.1
-cricdata>=0.1.0
