@@ -251,15 +251,19 @@ with tabs[4]:
     fmt = FORMATS[fmt_label]
     coverage = load_coverage(pid, fmt)
     cov_df = as_frame(coverage)
+    history_rows = load_dataset(pid, fmt, "match_history")
+    unresolved_count = sum(1 for row in history_rows if not row.get("match_id"))
     if cov_df.empty:
         st.info("No resolved match IDs are stored for this format. Career text rows may still be available in the Innings tab.")
+        st.metric("Match-history rows without a resolved ID", unresolved_count)
     else:
         stats = coverage_metrics(coverage)
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Resolved matches", stats["matches"])
-        m2.metric("Scorecards stored", stats["scorecards"])
-        m3.metric("Complete delivery feeds", stats["deliveries"])
-        m4.metric("Delivery failures", stats["failed"])
+        m2.metric("History rows without ID", unresolved_count)
+        m3.metric("Scorecards stored", stats["scorecards"])
+        m4.metric("Complete delivery feeds", stats["deliveries"])
+        m5.metric("Delivery failures", stats["failed"])
         st.dataframe(cov_df, use_container_width=True, hide_index=True)
 
         st.markdown("**Fetch delivery data for resolved matches**")
@@ -278,11 +282,14 @@ with tabs[4]:
                     message.info(f"Fetching match {idx}/{len(pending)} · {ref['match_id']}")
                     detail = collect_match_detail(get_client(), ref)
                     if detail["scorecard"] is not None:
-                        save_dataset(pid, fmt, "scorecards", [{
+                        existing_cards = load_dataset(pid, fmt, "scorecards")
+                        existing_cards = [r for r in existing_cards if str(r.get("match_id")) != str(ref["match_id"])]
+                        existing_cards.append({
                             "_record_key": ref["match_id"],
                             "match_id": ref["match_id"],
                             "scorecard_json": detail["scorecard"],
-                        }])
+                        })
+                        save_dataset(pid, fmt, "scorecards", existing_cards)
                         update_coverage(pid, fmt, ref["match_id"], scorecard_status="complete")
                     elif detail["scorecard_error"]:
                         update_coverage(pid, fmt, ref["match_id"], scorecard_status="failed")
