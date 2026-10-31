@@ -16,7 +16,7 @@ Player-first international cricket data collection and analysis using Python, St
 
 ## Install on Windows
 
-Use Python 3.11 or 3.12 if possible. The app does not require Playwright or a manually installed browser.
+Use Python 3.10 or newer. Python 3.12 is a conservative choice; the current cricdata release also declares Python 3.14 support. The app does not require Playwright or a manually installed browser.
 
 ```powershell
 cd cricket-analytics-platform
