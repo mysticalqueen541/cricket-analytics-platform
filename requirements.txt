@@ -1,7 +1,7 @@
 streamlit>=1.40
 pandas>=2.2
 numpy>=1.26
-cricdata>=0.1.0
+cricdata>=0.3.2
 plotly>=5.24
 requests>=2.32
 beautifulsoup4>=4.12
