@@ -167,6 +167,14 @@ with tabs[1]:
                 Fifties=("runs_numeric",lambda s:int(((s>=50)&(s<100)).sum())),
                 Highest=("runs_numeric","max")
             ).reset_index()
+            fours_col = first_col(posdf, ["4s", "Fours", "4"])
+            sixes_col = first_col(posdf, ["6s", "Sixes", "6"])
+            if fours_col:
+                posdf["_fours"] = pd.to_numeric(posdf[fours_col], errors="coerce").fillna(0)
+                grouped["Fours"] = posdf.groupby("batting_position")["_fours"].sum().values
+            if sixes_col:
+                posdf["_sixes"] = pd.to_numeric(posdf[sixes_col], errors="coerce").fillna(0)
+                grouped["Sixes"] = posdf.groupby("batting_position")["_sixes"].sum().values
             grouped["Average"] = grouped["Runs"] / grouped["Outs"].replace(0,pd.NA)
             grouped["Strike rate"] = grouped["Runs"] / grouped["Balls"].replace(0,pd.NA) * 100
             grouped = grouped.rename(columns={"batting_position":"Position"})
@@ -192,6 +200,10 @@ with tabs[2]:
         if date_col and innings["match_date"].notna().any():
             trend = innings.dropna(subset=["match_date","runs_numeric"]).sort_values("match_date")
             st.plotly_chart(px.line(trend,x="match_date",y="runs_numeric",markers=True,title="Runs in each ODI innings"),use_container_width=True)
+        if dismissal_col:
+            dismissal_counts = innings[dismissal_col].fillna("Not recorded").astype(str).value_counts().rename_axis("Dismissal").reset_index(name="Innings")
+            st.markdown("**Dismissal breakdown**")
+            st.plotly_chart(px.bar(dismissal_counts, x="Dismissal", y="Innings", title="Dismissal types in recorded innings"), use_container_width=True)
         st.dataframe(innings.drop(columns=["match_date"],errors="ignore"),use_container_width=True,hide_index=True)
         st.download_button("Download ODI innings CSV",innings.to_csv(index=False).encode("utf-8-sig"),"kl_rahul_odi_innings.csv","text/csv")
     else:
