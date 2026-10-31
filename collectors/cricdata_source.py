@@ -114,6 +114,8 @@ def collect_format_career(client, player_id, fmt):
         "career": {},
         "match_lists": {},
         "innings": {},
+        "series": {},
+        "grounds": {},
         "coverage": [],
         "errors": [],
     }
@@ -151,6 +153,19 @@ def collect_format_career(client, player_id, fmt):
             result["errors"].append(f"{stat_type} innings: {err}")
         else:
             result["innings"][stat_type] = list((innings or {}).get("innings", []))
+
+    # Series and venue splits from Statsguru; these are useful independent datasets.
+    for stat_type in ("batting", "bowling"):
+        series_rows, err = _safe_call(client.player_series_list, player_id, fmt=fmt, stat_type=stat_type)
+        if err:
+            result["errors"].append(f"{stat_type} series list: {err}")
+        else:
+            result["series"][stat_type] = list((series_rows or {}).get("series", []))
+        ground_rows, err = _safe_call(client.player_ground_stats, player_id, fmt=fmt, stat_type=stat_type)
+        if err:
+            result["errors"].append(f"{stat_type} ground stats: {err}")
+        else:
+            result["grounds"][stat_type] = list((ground_rows or {}).get("grounds", []))
 
     # Use allround match history first, then batting; merge other stat-type rows by
     # date/opposition/ground so the inventory includes non-batting appearances where listed.
