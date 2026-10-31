@@ -1,45 +1,60 @@
-"""KL Rahul ODI analytics dashboard — fixed-player edition."""
+"""Fixed-player KL Rahul ODI career analytics dashboard.
+
+All statistics are derived from public ESPNcricinfo Statsguru career, innings,
+match-list, series and venue tables collected by collectors/cricdata_source.py.
+No player/form selector, manual ID entry, scorecard scraping or ball-by-ball data.
+"""
 from datetime import datetime
-import re
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from collectors.cricdata_source import make_client, collect_format_career, SourceError
-from storage.database import save_player, save_dataset, load_dataset, save_coverage_rows, load_coverage
-from config import REQUEST_DELAY_SECONDS
+from collectors.cricdata_source import make_client, collect_format_career
+from storage.database import (
+    save_player, save_dataset, load_dataset, save_coverage_rows, load_coverage
+)
 
-PLAYER_ID = "422108"  # ESPNcricinfo Statsguru profile ID for KL Rahul
+PLAYER_ID = "422108"
 PLAYER_NAME = "KL Rahul"
 FORMAT = "odi"
+SOURCE_LABEL = "Public ESPNcricinfo Statsguru"
 
-st.set_page_config(page_title="KL Rahul | ODI Analytics", page_icon="🏏", layout="wide")
+st.set_page_config(page_title="KL Rahul | ODI Career Lab", page_icon="🏏", layout="wide")
 st.markdown("""
 <style>
-.block-container {max-width: 1500px; padding-top: 1.3rem;}
-[data-testid="stMetric"] {background: rgba(128,128,128,.08); padding: 13px; border-radius: 12px;}
-h1 {letter-spacing: -.035em;}
-.muted {opacity: .72; font-size: .9rem;}
+.block-container {max-width: 1580px; padding-top: 1.15rem; padding-bottom: 2rem;}
+[data-testid="stMetric"] {background: rgba(128,128,128,.075); padding: 13px 15px; border-radius: 12px;}
+h1 {letter-spacing: -.04em;}
+.small-note {opacity: .72; font-size: .86rem;}
+div[data-testid="stTabs"] button {font-weight: 600;}
 </style>
 """, unsafe_allow_html=True)
 
-def frame(dataset):
-    rows = load_dataset(PLAYER_ID, FORMAT, dataset)
+
+def load_frame(name):
+    rows = load_dataset(PLAYER_ID, FORMAT, name)
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
 
 def first_col(df, candidates):
     return next((c for c in candidates if c in df.columns), None)
 
-def numeric(df, candidates):
+
+def num(df, candidates):
     col = first_col(df, candidates)
     if not col:
-        return pd.Series(float("nan"), index=df.index)
+        return pd.Series(float("nan"), index=df.index, dtype="float64")
     return pd.to_numeric(df[col].astype(str).str.replace(",", "", regex=False), errors="coerce")
 
-def collect():
+
+def safe_div(a, b):
+    return a / b.replace(0, pd.NA)
+
+
+def collect_all():
     client = make_client()
     result = collect_format_career(client, PLAYER_ID, FORMAT)
-    save_player(PLAYER_ID, PLAYER_NAME, {"source": "ESPNcricinfo Statsguru", "format": "ODI"})
+    save_player(PLAYER_ID, PLAYER_NAME, {"source": SOURCE_LABEL, "format": "ODI"})
     for kind, rows in result["career"].items():
         save_dataset(PLAYER_ID, FORMAT, f"career_{kind}", [rows] if rows else [])
     for kind, rows in result["match_lists"].items():
@@ -52,216 +67,317 @@ def collect():
         save_dataset(PLAYER_ID, FORMAT, f"grounds_{kind}", rows)
     save_dataset(PLAYER_ID, FORMAT, "match_history", result["match_history"])
     save_coverage_rows(result["coverage"])
-    return result["errors"]
+    return result
 
-def load_or_refresh():
-    if st.button("↻ Refresh latest ODI records", type="secondary"):
-        st.session_state["force_refresh"] = True
-    should_fetch = st.session_state.pop("force_refresh", False)
-    existing = frame("innings_batting")
-    if should_fetch or existing.empty:
-        with st.spinner("Loading KL Rahul's ODI career and innings records from public ESPNcricinfo pages…"):
-            try:
-                errors = collect()
-                st.session_state["source_errors"] = errors
-                st.session_state["last_loaded"] = datetime.now().strftime("%d %b %Y, %H:%M")
-            except Exception as exc:
-                st.error(f"Could not load the public Statsguru records: {exc}")
-                st.info("Previously saved records, if available, remain on this device.")
+
+def prepare_innings(raw):
+    df = raw.copy()
+    if df.empty:
+        return df
+    df["Runs_num"] = num(df, ["Runs", "R", "runs"])
+    df["Balls_num"] = num(df, ["BF", "Balls", "B", "balls"])
+    df["Fours_num"] = num(df, ["4s", "Fours", "4"])
+    df["Sixes_num"] = num(df, ["6s", "Sixes", "6"])
+    df["SR_calc"] = safe_div(df["Runs_num"] * 100, df["Balls_num"])
+    date_col = first_col(df, ["Start Date", "Date", "Match Date"])
+    if date_col:
+        df["Match date"] = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
+        df["Year"] = df["Match date"].dt.year
     else:
-        st.session_state.setdefault("last_loaded", "Saved local dataset")
+        df["Match date"] = pd.NaT
+        df["Year"] = pd.NA
+    pos_col = first_col(df, ["Pos", "Batting Position", "Batting position", "position", "Bat Pos"])
+    df["Position_num"] = pd.to_numeric(df[pos_col], errors="coerce") if pos_col else pd.NA
+    dismissal_col = first_col(df, ["Dismissal", "How Out", "Dismissal Type", "Dismissal type"])
+    if dismissal_col:
+        d = df[dismissal_col].fillna("").astype(str).str.lower().str.strip()
+        df["Out_flag"] = ~d.isin(["", "-", "not out", "retired hurt", "absent", "did not bat", "dnb", ""])
+    else:
+        df["Out_flag"] = pd.NA
+    df["50_plus"] = df["Runs_num"].ge(50)
+    df["100_plus"] = df["Runs_num"].ge(100)
+    df["Duck"] = df["Runs_num"].eq(0) & df["Out_flag"].eq(True)
+    df["Boundary_runs"] = df["Fours_num"].fillna(0) * 4 + df["Sixes_num"].fillna(0) * 6
+    df["Boundary_pct"] = safe_div(df["Boundary_runs"] * 100, df["Runs_num"])
+    return df
 
-st.title("🏏 KL Rahul — ODI Career Analytics")
-st.caption("A single-player, single-format dashboard · ODI debut to latest available match · Public ESPNcricinfo Statsguru records")
-load_or_refresh()
+
+def score_summary(df, group_col):
+    out = df.groupby(group_col, dropna=False).agg(
+        Innings=("Runs_num", "count"),
+        Runs=("Runs_num", "sum"),
+        Balls=("Balls_num", "sum"),
+        Highest=("Runs_num", "max"),
+        Fours=("Fours_num", "sum"),
+        Sixes=("Sixes_num", "sum"),
+        Fifties=("50_plus", "sum"),
+        Hundreds=("100_plus", "sum"),
+    ).reset_index()
+    if "Out_flag" in df and df["Out_flag"].notna().any():
+        outs = df.groupby(group_col)["Out_flag"].sum().reset_index(name="Dismissals")
+        out = out.merge(outs, on=group_col, how="left")
+        out["Average"] = safe_div(out["Runs"], out["Dismissals"])
+    out["Strike rate"] = safe_div(out["Runs"] * 100, out["Balls"])
+    return out
+
+
+def show_download(df, filename, label):
+    if not df.empty:
+        st.download_button(label, df.to_csv(index=False).encode("utf-8-sig"), filename, "text/csv")
+
+
+st.title("🏏 KL Rahul — ODI Career Lab")
+st.caption("A fixed-player research dashboard · ODI debut to latest ODI in the public source · No player inputs or ball-by-ball data")
+with st.sidebar:
+    st.markdown("### KL Rahul")
+    st.markdown("**ODI career only**")
+    st.caption("Player ID: 422108")
+    st.caption("Source: ESPNcricinfo Statsguru")
+    refresh = st.button("↻ Refresh career data", type="primary", use_container_width=True)
+    st.markdown("---")
+    st.caption("The dashboard always loads KL Rahul's ODI records. There are no player or format selectors.")
+
+if refresh or not load_frame("innings_batting").shape[0]:
+    with st.spinner("Collecting KL Rahul's ODI career, match history, innings, series and venue statistics…"):
+        try:
+            result = collect_all()
+            st.session_state["last_refresh"] = datetime.now().strftime("%d %b %Y, %H:%M")
+            st.session_state["source_errors"] = result.get("errors", [])
+            st.success("Public Statsguru collection finished. Review the coverage panel for any source gaps.")
+        except Exception as exc:
+            st.error(f"Could not refresh public Statsguru records: {exc}")
+            st.info("Previously saved local data will still be displayed where available.")
 
 career_rows = load_dataset(PLAYER_ID, FORMAT, "career_batting")
 career = career_rows[0] if career_rows else {}
-innings = frame("innings_batting")
-history = frame("match_history")
-series = frame("series_batting")
-grounds = frame("grounds_batting")
-coverage = load_coverage(PLAYER_ID, FORMAT)
+innings_raw = load_frame("innings_batting")
+innings = prepare_innings(innings_raw)
+history = load_frame("match_history")
+series = load_frame("series_batting")
+grounds = load_frame("grounds_batting")
+coverage = pd.DataFrame(load_coverage(PLAYER_ID, FORMAT))
+match_list = load_frame("match_list_allround")
+if match_list.empty:
+    match_list = load_frame("match_list_batting")
 
 if innings.empty and not career:
-    st.warning("No KL Rahul ODI records have been saved yet. Check your internet connection and use Refresh latest ODI records.")
+    st.warning("No ODI records are saved yet. Check your internet connection and use Refresh career data.")
     st.stop()
 
-runs_col = first_col(innings, ["Runs", "R", "runs"])
-balls_col = first_col(innings, ["BF", "Balls", "B", "balls"])
-date_col = first_col(innings, ["Start Date", "Date", "Match Date"])
-opp_col = first_col(innings, ["Opposition", "Opponent"])
-ground_col = first_col(innings, ["Ground", "Venue"])
-pos_col = first_col(innings, ["Pos", "Batting Position", "Batting position", "position", "Bat Pos"])
-dismissal_col = first_col(innings, ["Dismissal", "How Out", "Dismissal Type", "Dismissal type"])
+def career_value(keys, default="—"):
+    for key in keys:
+        if career.get(key) not in (None, ""):
+            return career[key]
+    return default
 
-if not innings.empty:
-    innings["runs_numeric"] = numeric(innings, ["Runs", "R", "runs"])
-    innings["balls_numeric"] = numeric(innings, ["BF", "Balls", "B", "balls"])
-    innings["strike_rate_calc"] = innings["runs_numeric"] / innings["balls_numeric"].replace(0, pd.NA) * 100
-    if date_col:
-        innings["match_date"] = pd.to_datetime(innings[date_col], errors="coerce", dayfirst=True)
-        innings["year"] = innings["match_date"].dt.year
-    if pos_col:
-        innings["batting_position"] = pd.to_numeric(innings[pos_col], errors="coerce")
+matches = career_value(["Mat", "Matches"])
+runs = career_value(["Runs", "R"])
+average = career_value(["Ave", "Avg", "Average"])
+sr = career_value(["SR", "Strike Rate"])
+hs = career_value(["HS", "Highest"])
+hundreds = career_value(["100", "100s"])
+fifties = career_value(["50", "50s"])
+not_outs = career_value(["NO", "Not Outs"])
+last_loaded = st.session_state.get("last_refresh", "Saved local dataset")
+st.caption(f"Last retrieved: {last_loaded} · ODI debut: 11 June 2016 · Latest source match: see match-history table")
 
-matches = career.get("Mat", career.get("Matches", "—"))
-runs = career.get("Runs", career.get("R", "—"))
-average = career.get("Ave", career.get("Avg", "—"))
-strike_rate = career.get("SR", "—")
-hundreds = career.get("100", career.get("100s", "—"))
-fifties = career.get("50", career.get("50s", "—"))
-high_score = career.get("HS", "—")
-balls_faced = career.get("BF", "—")
+kpis = st.columns(7)
+for col, label, value in zip(kpis,
+    ["Matches", "Runs", "Average", "Strike rate", "Highest score", "Hundreds", "Fifties"],
+    [matches, runs, average, sr, hs, hundreds, fifties]):
+    col.metric(label, value if value not in (None, "") else "—")
 
-st.caption(f"Data last loaded: {st.session_state.get('last_loaded', 'not recorded')} · ESPNcricinfo player ID: {PLAYER_ID}")
-k1,k2,k3,k4,k5,k6 = st.columns(6)
-for col, label, value in [
-    (k1,"ODI matches",matches),(k2,"Runs",runs),(k3,"Batting average",average),
-    (k4,"Strike rate",strike_rate),(k5,"100s / 50s",f"{hundreds} / {fifties}"),(k6,"Highest score",high_score)
-]:
-    col.metric(label, value if value not in (None,"") else "—")
+tabs = st.tabs([
+    "Career overview", "Batting position", "Scoring & consistency",
+    "Opposition", "Venues & series", "Year-by-year", "Innings records", "Data coverage"
+])
 
-tabs = st.tabs(["Career overview","Batting position","Innings analysis","Opposition & venues","Year-by-year","Records & coverage"])
-
+# CAREER OVERVIEW
 with tabs[0]:
-    st.subheader("Career at a glance")
-    left,right = st.columns([1.1,1])
-    with left:
-        st.markdown("**Career batting summary — source values**")
-        summary = pd.DataFrame([career]) if career else pd.DataFrame()
-        if not summary.empty:
-            st.dataframe(summary, use_container_width=True, hide_index=True)
+    st.subheader("Career snapshot")
+    a, b = st.columns([1.05, 1])
+    with a:
+        st.markdown("**Official Statsguru ODI batting summary**")
+        if career:
+            st.dataframe(pd.DataFrame([career]), use_container_width=True, hide_index=True)
         else:
-            st.info("Career summary is not currently available from the source.")
-    with right:
-        st.markdown("**Runs per innings**")
-        if not innings.empty and runs_col:
-            chart = innings.dropna(subset=["runs_numeric"])
-            st.plotly_chart(px.histogram(chart, x="runs_numeric", nbins=18, labels={"runs_numeric":"Runs"}, title="Distribution of innings scores"), use_container_width=True)
+            st.info("Career summary not returned by the source.")
+    with b:
+        st.markdown("**Distribution of innings scores**")
+        scores = innings.dropna(subset=["Runs_num"]) if not innings.empty else pd.DataFrame()
+        if not scores.empty:
+            st.plotly_chart(px.histogram(scores, x="Runs_num", nbins=20,
+                labels={"Runs_num":"Runs"}, title="How often each score range occurred"), use_container_width=True)
         else:
-            st.info("Innings score data unavailable.")
+            st.info("Innings scores are not available.")
+    if not innings.empty:
+        q1, q2, q3, q4 = st.columns(4)
+        q1.metric("Innings rows", len(innings))
+        q2.metric("Runs in innings table", f"{int(innings['Runs_num'].sum()):,}")
+        q3.metric("50+ scores", int(innings["50_plus"].sum()))
+        q4.metric("Ducks recorded", int(innings["Duck"].sum()))
+        st.markdown("**Career score timeline**")
+        trend = innings.dropna(subset=["Match date", "Runs_num"]).sort_values("Match date")
+        if not trend.empty:
+            st.plotly_chart(px.scatter(trend, x="Match date", y="Runs_num", hover_data=[
+                c for c in [first_col(trend, ["Opposition", "Opponent"]), first_col(trend, ["Ground", "Venue"]), "Position_num"] if c
+            ], title="Every recorded ODI innings"), use_container_width=True)
     if not history.empty:
-        st.markdown("**Match history inventory**")
+        st.markdown("**ODI appearance history**")
         st.dataframe(history, use_container_width=True, hide_index=True)
+        show_download(history, "kl_rahul_odi_match_history.csv", "Download complete match-history table")
+
+# BATTING POSITION
+with tabs[1]:
+    st.subheader("Batting-position analysis")
+    st.write("Compare his output when opening, batting in the top order and playing the middle-order role.")
+    if not innings.empty and innings["Position_num"].notna().any():
+        pos = innings.dropna(subset=["Position_num", "Runs_num"]).copy()
+        pos["Position"] = pos["Position_num"].astype(int).map(lambda x: f"No. {x}")
+        grouped = score_summary(pos, "Position")
+        grouped["Position_order"] = grouped["Position"].str.extract(r"(\d+)").astype(int)
+        grouped = grouped.sort_values("Position_order")
+        c1, c2 = st.columns([1.1, 1])
+        with c1:
+            st.markdown("**Position-wise scorecard**")
+            st.dataframe(grouped.drop(columns=["Position_order"]).round(2), use_container_width=True, hide_index=True)
+        with c2:
+            st.plotly_chart(px.bar(grouped, x="Position", y="Runs", text="Runs",
+                title="Total ODI runs by batting position"), use_container_width=True)
+        c3, c4 = st.columns(2)
+        with c3:
+            metric = "Average" if "Average" in grouped else "Strike rate"
+            st.plotly_chart(px.bar(grouped, x="Position", y=metric, text=metric,
+                title=f"{metric} by batting position"), use_container_width=True)
+        with c4:
+            st.plotly_chart(px.bar(grouped, x="Position", y="Innings", text="Innings",
+                title="Innings played at each position"), use_container_width=True)
+        st.caption("Position analysis uses only the explicit batting-position field returned in the innings records. No batting position is guessed.")
+        show_download(grouped.drop(columns=["Position_order"]), "kl_rahul_odi_batting_position.csv", "Download batting-position analysis")
+    else:
+        st.warning("The innings data returned by the public source does not currently contain a usable batting-position field. The dashboard will not infer positions from match order. The raw innings records remain available under Innings records.")
+
+# SCORING & CONSISTENCY
+with tabs[2]:
+    st.subheader("Scoring profile and consistency")
+    if not innings.empty:
+        valid = innings.dropna(subset=["Runs_num"]).copy()
+        c1, c2 = st.columns(2)
+        with c1:
+            st.plotly_chart(px.histogram(valid, x="Runs_num", nbins=25, title="Score frequency",
+                labels={"Runs_num":"Runs scored"}), use_container_width=True)
+        with c2:
+            milestone = pd.DataFrame({"Milestone": ["0", "1–19", "20–49", "50–99", "100+"],
+                "Innings": [
+                    int(valid["Runs_num"].eq(0).sum()),
+                    int(valid["Runs_num"].between(1,19).sum()),
+                    int(valid["Runs_num"].between(20,49).sum()),
+                    int(valid["Runs_num"].between(50,99).sum()),
+                    int(valid["Runs_num"].ge(100).sum())
+                ]})
+            st.plotly_chart(px.bar(milestone, x="Milestone", y="Innings", text="Innings",
+                title="Runs-band frequency"), use_container_width=True)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("50+ scores", int(valid["Runs_num"].ge(50).sum()))
+        c2.metric("100+ scores", int(valid["Runs_num"].ge(100).sum()))
+        c3.metric("Fours", int(valid["Fours_num"].sum()) if valid["Fours_num"].notna().any() else "—")
+        c4.metric("Sixes", int(valid["Sixes_num"].sum()) if valid["Sixes_num"].notna().any() else "—")
+        if valid["Balls_num"].notna().any():
+            valid["Rolling average (last 10 innings)"] = valid["Runs_num"].rolling(10, min_periods=3).mean()
+            st.plotly_chart(px.line(valid, x="Match date" if valid["Match date"].notna().any() else valid.index,
+                y="Rolling average (last 10 innings)", title="Rolling 10-innings run average"), use_container_width=True)
+        if valid["Boundary_runs"].notna().any():
+            st.caption("Boundary runs are calculated from fours and sixes where those columns are supplied by Statsguru.")
+    else:
+        st.info("No innings score rows are available.")
+
+# OPPOSITION
+with tabs[3]:
+    st.subheader("Performance against each opponent")
+    opp_col = first_col(innings, ["Opposition", "Opponent"])
+    if opp_col and not innings.empty:
+        opp = score_summary(innings.dropna(subset=["Runs_num"]), opp_col).sort_values("Runs", ascending=False)
+        st.dataframe(opp.round(2), use_container_width=True, hide_index=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.plotly_chart(px.bar(opp, x=opp_col, y="Runs", title="Runs against each opponent"), use_container_width=True)
+        with c2:
+            y = "Average" if "Average" in opp else "Strike rate"
+            st.plotly_chart(px.bar(opp, x=opp_col, y=y, title=f"{y} against each opponent"), use_container_width=True)
+        show_download(opp, "kl_rahul_odi_opposition_splits.csv", "Download opposition splits")
+    else:
+        st.info("Opposition labels are not present in the innings table.")
+
+# VENUES & SERIES
+with tabs[4]:
+    st.subheader("Ground and series performance")
+    venue_col = first_col(innings, ["Ground", "Venue"])
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**Venue-level batting**")
+        if venue_col and not innings.empty:
+            venue = score_summary(innings.dropna(subset=["Runs_num"]), venue_col).sort_values("Runs", ascending=False)
+            st.dataframe(venue.round(2), use_container_width=True, hide_index=True)
+            st.plotly_chart(px.bar(venue.head(20), x=venue_col, y="Runs", title="Top venues by runs"), use_container_width=True)
+            show_download(venue, "kl_rahul_odi_venue_splits.csv", "Download venue splits")
+        elif not grounds.empty:
+            st.dataframe(grounds, use_container_width=True, hide_index=True)
+        else:
+            st.info("Venue split not available.")
+    with right:
+        st.markdown("**Statsguru series batting splits**")
+        if not series.empty:
+            st.dataframe(series, use_container_width=True, hide_index=True)
+            show_download(series, "kl_rahul_odi_series_splits.csv", "Download series splits")
+        else:
+            st.info("Series split not available.")
+
+# YEAR BY YEAR
+with tabs[5]:
+    st.subheader("Season-by-season ODI performance")
+    if not innings.empty and innings["Year"].notna().any():
+        annual = score_summary(innings.dropna(subset=["Year", "Runs_num"]), "Year").sort_values("Year")
+        annual["Year"] = annual["Year"].astype(int)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.plotly_chart(px.bar(annual, x="Year", y="Runs", text="Runs", title="Runs by calendar year"), use_container_width=True)
+        with c2:
+            st.plotly_chart(px.line(annual, x="Year", y="Strike rate", markers=True, title="Annual strike rate"), use_container_width=True)
+        st.dataframe(annual.round(2), use_container_width=True, hide_index=True)
+        show_download(annual, "kl_rahul_odi_yearly_splits.csv", "Download yearly splits")
+    else:
+        st.info("A usable date field is required for yearly analysis.")
+
+# INNINGS RECORDS
+with tabs[6]:
+    st.subheader("Every available ODI batting innings")
+    if not innings.empty:
+        st.caption(f"{len(innings):,} innings rows returned by the public innings table. Rows are not silently filled or fabricated.")
+        st.dataframe(innings, use_container_width=True, hide_index=True)
+        show_download(innings, "kl_rahul_odi_all_innings.csv", "Download all ODI innings (CSV)")
+    else:
+        st.info("No innings rows are available.")
+
+# COVERAGE / QUALITY
+with tabs[7]:
+    st.subheader("Source coverage and completeness")
+    a, b, c = st.columns(3)
+    a.metric("Innings records collected", len(innings))
+    b.metric("Match-history rows", len(history))
+    c.metric("Resolved match IDs", int(coverage["match_id"].notna().sum()) if not coverage.empty and "match_id" in coverage else 0)
+    if not coverage.empty:
+        st.markdown("**Resolved match references**")
+        st.dataframe(coverage.drop(columns=["last_error"], errors="ignore"), use_container_width=True, hide_index=True)
+        show_download(coverage, "kl_rahul_odi_source_coverage.csv", "Download coverage report")
+    if not match_list.empty:
+        st.markdown("**Statsguru match-list source rows**")
+        st.dataframe(match_list, use_container_width=True, hide_index=True)
     errors = st.session_state.get("source_errors", [])
     if errors:
-        with st.expander(f"Source retrieval notes ({len(errors)})"):
-            for err in errors: st.write("• " + str(err))
-
-with tabs[1]:
-    st.subheader("How has his batting position affected his ODI output?")
-    if pos_col and not innings.empty:
-        posdf = innings.dropna(subset=["batting_position","runs_numeric"]).copy()
-        if not posdf.empty:
-            posdf["batting_position"] = posdf["batting_position"].astype(int)
-            if dismissal_col:
-                d = posdf[dismissal_col].fillna("").astype(str).str.lower().str.strip()
-                posdf["is_out"] = ~d.isin(["","-","not out","retired hurt","absent","did not bat","dnb"])
-            else:
-                posdf["is_out"] = True
-            grouped = posdf.groupby("batting_position").agg(
-                Innings=("runs_numeric","count"), Runs=("runs_numeric","sum"),
-                Balls=("balls_numeric","sum"), Outs=("is_out","sum"),
-                Hundreds=("runs_numeric",lambda s:int((s>=100).sum())),
-                Fifties=("runs_numeric",lambda s:int(((s>=50)&(s<100)).sum())),
-                Highest=("runs_numeric","max")
-            ).reset_index()
-            fours_col = first_col(posdf, ["4s", "Fours", "4"])
-            sixes_col = first_col(posdf, ["6s", "Sixes", "6"])
-            if fours_col:
-                posdf["_fours"] = pd.to_numeric(posdf[fours_col], errors="coerce").fillna(0)
-                grouped["Fours"] = posdf.groupby("batting_position")["_fours"].sum().values
-            if sixes_col:
-                posdf["_sixes"] = pd.to_numeric(posdf[sixes_col], errors="coerce").fillna(0)
-                grouped["Sixes"] = posdf.groupby("batting_position")["_sixes"].sum().values
-            grouped["Average"] = grouped["Runs"] / grouped["Outs"].replace(0,pd.NA)
-            grouped["Strike rate"] = grouped["Runs"] / grouped["Balls"].replace(0,pd.NA) * 100
-            grouped = grouped.rename(columns={"batting_position":"Position"})
-            a,b = st.columns([1.1,1])
-            with a:
-                st.dataframe(grouped.round(2), use_container_width=True, hide_index=True)
-            with b:
-                st.plotly_chart(px.bar(grouped, x="Position", y="Runs", text="Runs", title="Career runs by batting position"), use_container_width=True)
-            st.plotly_chart(px.bar(grouped, x="Position", y="Average", text="Average", title="Batting average by position"), use_container_width=True)
-            st.caption("Position aggregates are calculated from the available innings rows. Average uses dismissals inferred from the source dismissal field; if that field is absent, the displayed average is not reliable.")
-        else:
-            st.info("The innings table contains a position field, but usable position/run values were not returned.")
-    else:
-        st.warning("The retrieved ESPNcricinfo innings table does not expose a recognised batting-position column. Position analysis is deliberately not inferred from score order or match number.")
-
-with tabs[2]:
-    st.subheader("Innings-level performance")
-    if not innings.empty:
-        c1,c2,c3 = st.columns(3)
-        c1.metric("Innings records",len(innings))
-        c2.metric("Runs in innings table",int(innings["runs_numeric"].sum()) if innings["runs_numeric"].notna().any() else "—")
-        c3.metric("Balls faced in innings table",int(innings["balls_numeric"].sum()) if innings["balls_numeric"].notna().any() else "—")
-        if date_col and innings["match_date"].notna().any():
-            trend = innings.dropna(subset=["match_date","runs_numeric"]).sort_values("match_date")
-            st.plotly_chart(px.line(trend,x="match_date",y="runs_numeric",markers=True,title="Runs in each ODI innings"),use_container_width=True)
-        if dismissal_col:
-            dismissal_counts = innings[dismissal_col].fillna("Not recorded").astype(str).value_counts().rename_axis("Dismissal").reset_index(name="Innings")
-            st.markdown("**Dismissal breakdown**")
-            st.plotly_chart(px.bar(dismissal_counts, x="Dismissal", y="Innings", title="Dismissal types in recorded innings"), use_container_width=True)
-        st.dataframe(innings.drop(columns=["match_date"],errors="ignore"),use_container_width=True,hide_index=True)
-        st.download_button("Download ODI innings CSV",innings.to_csv(index=False).encode("utf-8-sig"),"kl_rahul_odi_innings.csv","text/csv")
-    else:
-        st.info("No innings-level batting rows are available.")
-
-with tabs[3]:
-    st.subheader("Opposition and venue splits")
-    c1,c2 = st.columns(2)
-    with c1:
-        st.markdown("**Against each opposition**")
-        if opp_col and not innings.empty:
-            opp = innings.groupby(opp_col).agg(Innings=("runs_numeric","count"),Runs=("runs_numeric","sum"),Balls=("balls_numeric","sum"),Highest=("runs_numeric","max")).reset_index()
-            opp["Strike rate"] = opp["Runs"] / opp["Balls"].replace(0,pd.NA) * 100
-            st.dataframe(opp.round(2),use_container_width=True,hide_index=True)
-            st.plotly_chart(px.bar(opp,x=opp_col,y="Runs",title="Runs by opposition"),use_container_width=True)
-        else: st.info("Opposition field unavailable in innings records.")
-    with c2:
-        st.markdown("**At each venue**")
-        if ground_col and not innings.empty:
-            venue = innings.groupby(ground_col).agg(Innings=("runs_numeric","count"),Runs=("runs_numeric","sum"),Balls=("balls_numeric","sum"),Highest=("runs_numeric","max")).reset_index()
-            venue["Strike rate"] = venue["Runs"] / venue["Balls"].replace(0,pd.NA) * 100
-            st.dataframe(venue.round(2),use_container_width=True,hide_index=True)
-            st.plotly_chart(px.bar(venue,x=ground_col,y="Runs",title="Runs by venue"),use_container_width=True)
-        elif not grounds.empty:
-            st.dataframe(grounds,use_container_width=True,hide_index=True)
-        else: st.info("Venue field unavailable in innings records.")
-    if not series.empty:
-        st.markdown("**Statsguru series batting splits**")
-        st.dataframe(series,use_container_width=True,hide_index=True)
-
-with tabs[4]:
-    st.subheader("Year-by-year ODI performance")
-    if not innings.empty and "year" in innings.columns and innings["year"].notna().any():
-        annual = innings.dropna(subset=["year"]).groupby("year").agg(Innings=("runs_numeric","count"),Runs=("runs_numeric","sum"),Balls=("balls_numeric","sum"),Highest=("runs_numeric","max")).reset_index()
-        annual["Strike rate"] = annual["Runs"] / annual["Balls"].replace(0,pd.NA) * 100
-        st.plotly_chart(px.bar(annual,x="year",y="Runs",text="Runs",title="ODI runs by calendar year"),use_container_width=True)
-        st.dataframe(annual.round(2),use_container_width=True,hide_index=True)
-    else:
-        st.info("Year trend requires a parseable match date in the source innings rows.")
-    if not history.empty:
-        st.markdown("**Match appearances by year / source match list**")
-        st.dataframe(history,use_container_width=True,hide_index=True)
-
-with tabs[5]:
-    st.subheader("Records, source coverage and data quality")
-    st.markdown("**Official public career summary returned by Statsguru**")
-    if career: st.dataframe(pd.DataFrame([career]),use_container_width=True,hide_index=True)
-    else: st.info("Career summary unavailable.")
-    cov = pd.DataFrame(coverage)
-    if not cov.empty:
-        x,y,z = st.columns(3)
-        x.metric("Match IDs resolved",len(cov))
-        y.metric("Scorecards marked complete",int(cov.get("scorecard_status",pd.Series(dtype=str)).eq("complete").sum()))
-        z.metric("Match-history rows",len(history))
-        st.dataframe(cov.drop(columns=["last_error"],errors="ignore"),use_container_width=True,hide_index=True)
-    st.caption("No ball-by-ball feeds are requested or stored by this dashboard. Match IDs and innings rows are shown only when resolved from source pages; missing records are not fabricated.")
-    if not history.empty:
-        st.download_button("Download match-history CSV",history.to_csv(index=False).encode("utf-8-sig"),"kl_rahul_odi_match_history.csv","text/csv")
+        with st.expander(f"Collection notes ({len(errors)} source messages)"):
+            for err in errors:
+                st.write("• " + str(err))
+    st.info("This dashboard uses career aggregates, innings tables, match lists, series splits and venue splits only. It does not request ball-by-ball feeds or infer missing match records, scores, batting positions or dismissals.")
 
 st.divider()
-st.caption("Independent research dashboard. Source: public ESPNcricinfo Statsguru pages via cricdata. Data availability and historical coverage depend on the source.")
+st.caption("Independent cricket research dashboard · Public ESPNcricinfo Statsguru data via cricdata · Not affiliated with ESPNcricinfo. Coverage depends on the source pages and may contain historical gaps.")
