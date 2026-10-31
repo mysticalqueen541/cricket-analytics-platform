@@ -3,9 +3,9 @@ setlocal
 cd /d "%~dp0"
 echo Creating the local Python environment...
 if not exist .venv (
-    py -3.12 -m venv .venv
+    py -m venv .venv
     if errorlevel 1 (
-        echo Python 3.12 was not found. Install Python 3.12 from python.org, then run this file again.
+        echo Python was not found. Install Python 3.10 or newer from python.org, then run this file again.
         pause
         exit /b 1
     )
